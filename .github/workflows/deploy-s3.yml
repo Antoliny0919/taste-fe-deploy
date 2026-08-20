@@ -1,0 +1,78 @@
+name: Deploy to S3
+
+# main 브랜치의 frontend/ 가 바뀌면 자동 실행 + Actions 탭에서 수동 실행도 가능
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/deploy-s3.yml'
+  workflow_dispatch:
+
+# 배포가 겹치면 나중 것만 남긴다 (오래된 빌드가 최신 빌드를 덮어쓰는 사고 방지)
+concurrency:
+  group: deploy-s3
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: ap-northeast-2
+  S3_BUCKET: chongchong-frontend-poc # ← 본인이 만든 버킷 이름으로 변경
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. 리포지토리 코드를 러너(임시 우분투 머신)로 내려받는다
+      - uses: actions/checkout@v4
+
+      # 2. pnpm + node 준비
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      # 3. 설치 & 빌드 → frontend/dist 생성
+      - name: Install
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        working-directory: frontend
+        run: pnpm build
+        env:
+          DEPLOY_TARGET: s3
+          # S3는 정적 파일만 서빙하므로 백엔드는 다른 도메인이다 → 절대 URL 필요
+          API_BASE: ${{ vars.API_BASE || 'https://api.example.com' }}
+
+      # 4. AWS 자격증명 세팅 (Settings > Secrets and variables > Actions 에 등록)
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 5-1. 해시가 붙은 정적 자산은 1년 캐시 (파일명이 바뀌므로 안전)
+      - name: Upload assets
+        run: |
+          aws s3 sync frontend/dist s3://${{ env.S3_BUCKET }} \
+            --delete \
+            --exclude "index.html" \
+            --cache-control "public,max-age=31536000,immutable"
+
+      # 5-2. index.html 만 캐시 금지 (이게 최신이어야 새 자산을 가리킨다)
+      - name: Upload index.html
+        run: |
+          aws s3 cp frontend/dist/index.html s3://${{ env.S3_BUCKET }}/index.html \
+            --cache-control "no-cache,no-store,must-revalidate"
+
+      # 6. CloudFront를 붙였다면 캐시 무효화 (변수 미설정 시 자동 스킵)
+      - name: Invalidate CloudFront
+        if: vars.CLOUDFRONT_DISTRIBUTION_ID != ''
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --paths "/index.html"
