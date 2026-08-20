@@ -17,6 +17,7 @@
 | **IAM**          | AWS 권한 관리. "GitHub Actions가 이 버킷에만 파일을 올릴 수 있다"를 정의하는 곳  |
 | **CloudFront**   | AWS의 CDN. HTTPS와 전 세계 캐싱을 붙여준다 (POC 단계에선 생략 가능)             |
 | **CD**           | 코드가 머지되면 사람 손 없이 자동으로 위 과정을 수행하는 것                     |
+| **CORS**         | "다른 주소의 서버에 요청해도 되는가"를 브라우저가 검사하는 규칙. 서버가 허용해 줘야 통과 |
 
 ---
 
@@ -30,13 +31,13 @@ flowchart LR
     D --> E["aws s3 sync<br/>파일 업로드"]
     E --> F[("S3 버킷<br/>chongchong-frontend-poc")]
     F --> G["사용자 브라우저"]
-    G -. "fetch /api" .-> H["Spring<br/>(별도 EC2/도메인)"]
+    G -. "fetch http://EC2-IP:8080/api/health<br/>(다른 오리진 → CORS 필요)" .-> H["Spring :8080<br/>(별도 EC2/도메인)"]
 
     style F fill:#E5F9F0
-    style H fill:#EDEDED
+    style H fill:#FFF1E5
 ```
 
-핵심은 **프론트와 백엔드가 완전히 분리된 주소**를 갖는다는 점이다. 브라우저는 화면 파일은 S3에서, 데이터는 스프링 서버에서 각각 받아온다.
+핵심은 **프론트와 백엔드가 완전히 분리된 주소**를 갖는다는 점이다. 브라우저는 화면 파일은 S3에서, 데이터는 스프링 서버에서 각각 받아온다. 이 리포의 `backend/`가 바로 그 스프링 서버 역할이고, **점선 화살표가 이 버전의 유일한 관문**이다 — 오리진이 다르므로 CORS 허용이 없으면 브라우저가 요청을 막는다.
 
 ---
 
@@ -80,8 +81,24 @@ flowchart LR
 | ---------- | --------------------------- | ------------------------------ |
 | Secret     | `AWS_ACCESS_KEY_ID`         | 4번에서 받은 키                |
 | Secret     | `AWS_SECRET_ACCESS_KEY`     | 4번에서 받은 시크릿            |
-| Variable   | `API_BASE`                  | 스프링 서버 주소 (예: `https://api.chongchong.com`) |
+| Variable   | `API_BASE`                  | 스프링 서버 주소 + `/api` (예: `http://13.125.0.1:8080/api`) |
 | Variable   | `CLOUDFRONT_DISTRIBUTION_ID` | (선택) CloudFront 붙였을 때만 |
+
+> `API_BASE`에 **`/api`까지 포함**해야 한다. 프론트는 `API_BASE + "/health"` 로 호출하고 스프링은 `/api/health` 로 받으므로, `/api`가 빠지면 404가 난다.
+
+### 6. 백엔드(스프링) 쪽 준비 ← 버전 1에만 있는 단계
+
+`backend/`를 EC2에서 띄우고([backend/README.md](../backend/README.md)), 두 가지를 맞춰 준다.
+
+1. **보안 그룹에서 8080을 열어 준다.** 브라우저가 스프링에 **직접** 요청하므로 8080이 인터넷에 노출되어야 한다. (버전 2는 nginx가 대신 받아 주므로 닫아 둔다)
+2. **CORS 허용 주소에 S3 웹사이트 주소를 추가한다.** `backend/src/main/resources/application.properties`:
+
+```properties
+app.deploy-target=s3
+app.cors.allowed-origins=http://localhost:3005,http://chongchong-frontend-poc.s3-website.ap-northeast-2.amazonaws.com
+```
+
+> 스킴(`http://`)과 포트까지 **정확히** 일치해야 한다. 브라우저 콘솔에 `No 'Access-Control-Allow-Origin' header` 가 뜬다면 이 줄을 의심한다.
 
 ---
 
@@ -94,7 +111,7 @@ flowchart LR
 | `checkout`                      | 깃허브가 빌려준 우분투 머신에 우리 코드를 내려받는다                 |
 | `pnpm/action-setup` + `setup-node` | pnpm 11.9.0 / node 22 설치, 의존성 캐시                            |
 | `pnpm install --frozen-lockfile` | lockfile 그대로 설치 (CI에서 버전이 멋대로 올라가는 걸 막는다)      |
-| `pnpm build`                    | webpack 프로덕션 빌드 → `frontend/dist`                              |
+| `pnpm build`                    | webpack 프로덕션 빌드 → `frontend/dist`. 이때 `API_BASE`가 번들에 **박힌다** |
 | `configure-aws-credentials`     | Secrets의 키로 AWS 로그인                                            |
 | `aws s3 sync --delete`          | dist를 버킷에 반영. `--delete`로 이전 배포의 잔여 파일도 정리        |
 | `aws s3 cp index.html`          | index.html만 캐시 금지 헤더로 다시 올린다                            |
@@ -112,7 +129,14 @@ flowchart LR
 1. `frontend/src/App.tsx`의 `MESSAGE` 문구를 아무렇게나 수정
 2. `git commit && git push origin main`
 3. GitHub Actions 탭에서 초록불 확인 (약 1~2분)
-4. S3 웹사이트 주소를 새로고침 → 문구와 커밋 해시가 바뀌어 있으면 성공
+4. S3 웹사이트 주소를 새로고침 → 문구와 커밋 해시가 바뀌어 있으면 **프론트 배포 성공**
+5. 같은 화면의 **API** 항목이 `연결 성공`인지 확인 → 여기까지 오면 **백엔드 연동까지 성공**
+
+| 화면의 API 항목        | 뜻                                                              |
+| ---------------------- | --------------------------------------------------------------- |
+| `연결 성공`            | 8080 개방 + CORS 허용이 둘 다 맞았다                            |
+| `연결 실패`            | 스프링이 안 떠 있거나, 8080이 막혔거나, CORS 주소가 틀렸다      |
+| 콘솔에 mixed content   | 페이지는 HTTPS인데 API는 HTTP다 (CloudFront를 붙인 뒤 흔한 케이스) |
 
 ---
 
@@ -127,8 +151,9 @@ flowchart LR
 
 **주의할 점**
 
-- **CORS**: 도메인이 달라서 스프링에 CORS 허용 설정이 반드시 필요하다. 쿠키 인증을 쓴다면 `SameSite=None; Secure`까지 챙겨야 하고, 그러려면 양쪽 다 HTTPS여야 한다 → 사실상 CloudFront가 필수가 된다
-- S3 웹사이트 엔드포인트는 **HTTP만** 지원한다. HTTPS는 CloudFront를 붙여야 생긴다
+- **CORS**: 도메인이 달라서 스프링에 CORS 허용 설정(`app.cors.allowed-origins`)이 반드시 필요하다. **프론트 주소가 바뀔 때마다 백엔드 설정도 같이 고쳐야 한다** — 배포마다 주소가 달라지는 PR 프리뷰를 붙이면 이게 계속 걸린다. 쿠키 인증을 쓴다면 `SameSite=None; Secure`까지 챙겨야 하고, 그러려면 양쪽 다 HTTPS여야 한다 → 사실상 CloudFront가 필수가 된다
+- **백엔드 포트가 인터넷에 노출된다.** 브라우저가 스프링을 직접 부르므로 8080(또는 백엔드 도메인)이 공개되어야 한다
+- S3 웹사이트 엔드포인트는 **HTTP만** 지원한다. HTTPS는 CloudFront를 붙여야 생긴다. 그런데 페이지가 HTTPS가 되는 순간 **HTTP API 호출은 브라우저가 차단**하므로(mixed content), 백엔드에도 HTTPS를 붙여야 한다 → HTTPS 전환은 프론트 혼자 끝나지 않는다
 - 환경변수가 빌드 시점에 번들에 박힌다. 운영/개발 주소가 다르면 빌드를 따로 해야 한다
 
 ---
@@ -152,6 +177,17 @@ flowchart LR
 - `aws s3 sync dist s3://버킷명 --delete` 실행
 - **이 명령 한 줄이 CD의 본체다.** Actions는 이걸 대신 쳐주는 것뿐이다
 
+### 2.5단계 — 백엔드를 붙여 본다 (30분)
+
+CORS를 문서로 읽는 것보다 한 번 막혀 보는 게 빠르다.
+
+- 로컬에서 `cd backend && ./gradlew bootRun` → `curl localhost:8080/api/health` 확인
+- 방금 올린 S3 주소로 접속 → 화면의 **API** 항목이 `연결 실패`이고 콘솔에 CORS 에러가 뜨는 걸 확인한다 (**이게 정상이다**)
+- `application.properties`의 `app.cors.allowed-origins`에 S3 주소를 추가하고 재시작 → `연결 성공`으로 바뀌는지 확인
+- 여기서 "버전 1은 프론트 배포가 백엔드 설정 변경을 부른다"를 체감하게 된다
+
+> 백엔드를 로컬(`localhost:8080`)에 띄웠다면 S3 화면에서는 붙지 않는다. 사용자 브라우저 기준 주소이므로, 실제로 확인하려면 EC2에 올려 두고 `API_BASE`를 그 주소로 잡아야 한다.
+
 ### 3단계 — GitHub Actions로 옮긴다 (1시간)
 
 - Secrets에 키 등록
@@ -168,4 +204,5 @@ flowchart LR
 
 - **CloudFront + ACM 인증서**로 HTTPS. 소셜 로그인(카카오/구글/애플) 리다이렉트를 붙이려면 HTTPS가 사실상 필수이니 총총에서는 이 단계를 빨리 당기는 게 좋다
 - **OIDC 전환**: 액세스 키를 Secrets에 두는 대신 GitHub↔AWS 신뢰관계를 맺어 임시 자격증명을 발급받는 방식. 장기 키가 사라져 유출 위험이 없다
-- **PR 프리뷰 배포**: PR 번호별 폴더(`s3://버킷/pr-123/`)에 올려 디자인 리뷰용 URL 제공
+- **PR 프리뷰 배포**: PR 번호별 폴더(`s3://버킷/pr-123/`)에 올려 디자인 리뷰용 URL 제공. 단, 주소가 늘어나므로 백엔드 CORS 목록도 함께 관리해야 한다
+- **API도 CloudFront 뒤로**: `/api/*`를 백엔드 오리진으로 라우팅하면 오리진이 하나가 되어 CORS가 사라진다. 버전 2의 nginx가 하던 일을 CloudFront가 대신하는 셈

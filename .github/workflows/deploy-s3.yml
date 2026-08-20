@@ -45,8 +45,9 @@ jobs:
         run: pnpm build
         env:
           DEPLOY_TARGET: s3
-          # S3는 정적 파일만 서빙하므로 백엔드는 다른 도메인이다 → 절대 URL 필요
-          API_BASE: ${{ vars.API_BASE || 'https://api.example.com' }}
+          # S3는 정적 파일만 서빙하므로 백엔드는 다른 도메인이다 → 절대 URL 필요.
+          # 스프링이 /api/health 로 받으므로 /api 까지 포함해야 한다.
+          API_BASE: ${{ vars.API_BASE || 'https://api.example.com/api' }}
 
       # 4. AWS 자격증명 세팅 (Settings > Secrets and variables > Actions 에 등록)
       - uses: aws-actions/configure-aws-credentials@v4

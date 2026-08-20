@@ -4,7 +4,8 @@ React(webpack + pnpm) 앱을 AWS에 배포하는 **두 가지 방식**을 최소
 
 > 이 POC의 목표는 딱 하나입니다.
 > **"코드를 고쳐 push하면 배포된 주소에 반영되는가"** 를 눈으로 확인하는 것.
-> 백엔드(Spring) 배포는 다루지 않습니다.
+>
+> `backend/`에 헬스 엔드포인트 하나짜리 Spring 서버가 들어 있습니다. 프론트가 **살아있는 백엔드에 실제로 붙는지**(= 두 버전의 진짜 차이인 CORS/오리진 문제)까지 눈으로 보기 위한 껍데기이고, **백엔드 배포 자동화(systemd·무중단 전환 등)는 다루지 않습니다.**
 
 | 버전                       | 방식                              | 이럴 때 고른다                                             |
 | -------------------------- | --------------------------------- | ---------------------------------------------------------- |
@@ -19,9 +20,15 @@ React(webpack + pnpm) 앱을 AWS에 배포하는 **두 가지 방식**을 최소
 chongchong-deploy-poc/
 ├── frontend/                   # 두 버전이 공유하는 최소 리액트 앱
 │   ├── src/App.tsx             # ★ 배포 확인용 화면 (이 파일을 고쳐서 테스트)
-│   ├── webpack.config.js       # contenthash 파일명 + 빌드 정보 주입
+│   ├── webpack.config.js       # contenthash 파일명 + 빌드 정보 + API_BASE 주입
 │   ├── package.json
 │   └── ...
+│
+├── backend/                    # 두 버전이 공유하는 최소 스프링 서버 (GET /api/health 하나)
+│   ├── README.md               # 실행법 + CORS 설정 위치
+│   ├── src/main/.../ChongchongApplication.java
+│   ├── src/main/resources/application.properties  # ★ deploy-target / CORS 허용 주소
+│   └── run-on-ec2.sh           # EC2에서 백그라운드로 띄우는 POC용 스크립트
 │
 ├── s3/                         # 버전 1
 │   ├── README.md               # 설명 + 다이어그램 + 진행 플랜
@@ -53,6 +60,8 @@ chongchong-deploy-poc/
 | SPA 라우팅 처리     | 오류 문서를 `index.html`로 지정        | nginx `try_files ... /index.html`     |
 | HTTPS               | CloudFront 필요                        | certbot 등으로 서버에 설치            |
 | 서버 관리           | 없음                                   | nginx·보안그룹·SSH 키 관리 필요       |
+| **백엔드 주소 주입** | `API_BASE`에 절대 URL (`http://<EC2-IP>:8080/api`) | `API_BASE=/api` (상대경로)  |
+| 백엔드 포트 노출    | 8080을 인터넷에 열어야 함              | 8080은 닫아둔다 (nginx만 접근)        |
 | 비용                | 사실상 0에 가까움                      | EC2 인스턴스 비용 (백엔드와 공유)     |
 | 롤백                | 이전 빌드 재업로드                     | 링크만 이전 폴더로 되돌리면 즉시      |
 | 프론트 학습 난이도  | 낮음                                   | 중간 (서버 지식 필요)                 |
@@ -66,12 +75,23 @@ chongchong-deploy-poc/
 
 ### 1. 로컬 확인
 
+터미널 두 개를 씁니다.
+
 ```bash
+# 터미널 1 — 백엔드 (JDK 21 이상 필요)
+cd backend
+./gradlew bootRun            # http://localhost:8080/api/health
+```
+
+```bash
+# 터미널 2 — 프론트
 cd frontend
 pnpm install     # ← lockfile이 생성됩니다. 반드시 커밋하세요
 pnpm start       # http://localhost:3005
 pnpm build       # dist/ 확인
 ```
+
+화면의 **API** 항목이 `연결 성공`이면 프론트↔백엔드가 붙은 것입니다. 백엔드를 안 띄웠다면 `연결 실패`가 뜨는데, 프론트 배포만 확인할 거라면 그대로 둬도 됩니다. 자세한 내용은 [backend/README.md](./backend/README.md).
 
 > 워크플로가 `pnpm install --frozen-lockfile`을 쓰므로 **`frontend/pnpm-lock.yaml`이 커밋되어 있지 않으면 CI가 실패합니다.**
 
@@ -83,6 +103,8 @@ pnpm build       # dist/ 확인
 ### 3. POC 검증
 
 `frontend/src/App.tsx`의 `MESSAGE` 문구를 수정하고 main에 push → Actions 초록불 → 배포 주소 새로고침. 문구와 커밋 해시가 바뀌어 있으면 CD가 동작하는 것입니다.
+
+백엔드까지 띄웠다면 같은 화면의 **API** 항목이 `연결 성공`인지도 함께 봅니다. 여기서 막히는 지점이 두 버전의 실질적 차이입니다 — 버전 1은 CORS 설정과 8080 공개가 필요하고, 버전 2는 nginx 프록시라 그냥 붙습니다.
 
 ---
 
@@ -96,3 +118,5 @@ pnpm build       # dist/ 확인
 | `concurrency` 설정           | 연속 push 시 오래된 빌드가 최신 빌드를 덮어쓰는 사고 방지             |
 | `paths: frontend/**`         | 문서만 고쳤을 때 불필요한 배포가 돌지 않도록                          |
 | `API_BASE` 주입 분리         | 두 버전의 실질적 차이(오리진 분리 여부)가 코드에 드러나도록          |
+| 화면에 API 연결 상태 표시      | CORS·오리진 문제를 개발자도구가 아니라 화면에서 바로 알아채도록      |
+| 백엔드 응답에 `serverTime`     | "캐시된 화면"과 "실제로 서버에 다녀온 화면"을 구분하기 위해          |
