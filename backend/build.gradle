@@ -1,0 +1,22 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '4.1.0'
+}
+
+group = 'com.chongchong'
+version = '0.0.1-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Spring Boot가 관리하는 버전 목록(BOM). 개별 라이브러리 버전을 적지 않아도 된다.
+    implementation platform('org.springframework.boot:spring-boot-dependencies:4.1.0')
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+}
+
+// 배포 스크립트가 항상 같은 파일명을 찾을 수 있도록 고정
+tasks.named('bootJar') {
+    archiveFileName = 'chongchong-backend.jar'
+}
