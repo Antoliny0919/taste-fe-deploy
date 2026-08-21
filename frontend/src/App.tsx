@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
  * ▶ POC 사용법: 아래 MESSAGE 를 아무렇게나 수정하고 main 브랜치에 push 한 뒤,
  *   배포된 주소를 새로고침해서 문구가 바뀌는지 확인하면 된다.
  */
-const MESSAGE = "총총 배포 POC — 새로운 버전이다.!!! (v4)";
+const MESSAGE = "김동은 컴퓨터";
 
 export default function App() {
   const [apiStatus, setApiStatus] = useState("확인 중...");
